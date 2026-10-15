@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scan test</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto; padding: 16px; }
+  #reader { width: 100%; }
+  input, button { font-size: 16px; padding: 10px; }
+  input { width: 60%; }
+  #result { margin-top: 16px; padding: 12px; border: 1px solid #ccc; border-radius: 8px; white-space: pre-wrap; }
+  img { max-width: 140px; display: block; margin-bottom: 8px; }
+  .err { color: #b00020; }
+</style>
+</head>
+<body>
+<h1>Scan test</h1>
+<p><button id="cam">Start camera</button></p>
+<div id="reader"></div>
+<p>
+  <input id="manual" inputmode="numeric" placeholder="Or type ISBN">
+  <button id="go">Look up</button>
+</p>
+<div id="result">Waiting for scan…</div>
+<pre id="log" style="font-size:12px;background:#f4f4f4;padding:8px;overflow:auto;white-space:pre-wrap"></pre>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+// ---- CONFIG ----
+const ENDPOINT = "https://ewrxnjjqwswurswxfkuk.supabase.co/functions/v1/books-probe";
+// ----------------
+
+const out = document.getElementById("result");
+const logEl = document.getElementById("log");
+function log(msg) {
+  console.log(msg);
+  logEl.textContent += new Date().toISOString().slice(11, 19) + " " + msg + "\n";
+}
+log("Page origin: " + location.origin + " | secure: " + window.isSecureContext);
+let busy = false;
+
+async function lookup(isbn) {
+  if (busy) return;
+  busy = true;
+  out.textContent = "Looking up " + isbn + "…";
+  log("Scanned/entered: " + isbn + " -> GET " + ENDPOINT + "?isbn=" + isbn);
+  try {
+    const res = await fetch(`${ENDPOINT}?isbn=${encodeURIComponent(isbn)}`);
+    if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()));
+    const d = await res.json();
+    const mismatch = d.isbn && d.isbn !== isbn ? `<div class="err">Sent ${isbn}, function returned ${d.isbn}</div>` : "";
+    out.innerHTML = mismatch +
+      `<b>${d.title ?? "(no title)"}</b>\n` +
+      `Status: ${d.lookup_status}\nTier: ${d.classification?.tier} (${d.classification?.status})\n` +
+      `Basis: ${d.classification?.basis}\nLatency: ${d.latency_ms} ms\n\n` +
+      `<small>${JSON.stringify(d, null, 1)}</small>`;
+  } catch (e) {
+    log("ERROR: " + e.name + ": " + e.message);
+    out.innerHTML = `<span class="err">${e.message}</span>`;
+    // Diagnose: a no-cors request ignores CORS rules. If it succeeds, the server is reachable and CORS is the cause.
+    try {
+      await fetch(`${ENDPOINT}?isbn=${encodeURIComponent(isbn)}`, { mode: "no-cors" });
+      log("DIAGNOSIS: no-cors request succeeded -> server reachable, CORS headers missing/blocked on books-probe.");
+    } catch (e2) {
+      log("DIAGNOSIS: no-cors request also failed -> network/DNS/blocked, not CORS. " + e2.message);
+    }
+  } finally {
+    setTimeout(() => { busy = false; }, 2000); // debounce repeat reads
+  }
+}
+
+const scanner = new Html5Qrcode("reader");
+function startCamera() {
+  if (!window.isSecureContext) {
+    out.innerHTML = `<span class="err">Camera needs HTTPS. This page is on ${location.protocol}//, so the browser blocks it. Open the hosted https:// URL instead of the local file.</span>`;
+    return;
+  }
+  out.textContent = "Starting camera… tap Allow when asked.";
+  scanner.start(
+    { facingMode: "environment" },
+    { fps: 10, qrbox: { width: 280, height: 140 }, formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8] },
+    (text) => lookup(text),
+    () => {}
+  ).then(() => { out.textContent = "Point at a barcode."; })
+   .catch(e => {
+     const denied = /NotAllowed|Permission/i.test(String(e));
+     out.innerHTML = `<span class="err">Camera error: ${e}</span>` +
+       (denied ? "\nIf no prompt appeared: Chrome menu → Settings → Site settings → Camera → allow for this site, then tap Start camera again." : "");
+   });
+}
+document.getElementById("cam").onclick = startCamera;
+
+document.getElementById("go").onclick = () => {
+  const v = document.getElementById("manual").value.replace(/[^0-9X]/gi, "");
+  if (v) lookup(v);
+};
+</script>
+</body>
+</html>
